@@ -1,0 +1,16 @@
+X-VRAM Manager - Changelog
+===========================
+
+v0.3
+----
+- Standalone XPPython3 texture-pager tuning plugin.
+- No MotionVectors/TAA Vulkan layer required.
+- Late resolution of X-Plane private pager controls.
+- Safe restoration of original pager values on Python reload or disable.
+- Conservative default tuning:
+  max_overdrive = 64
+  size_fudge_factor = 0.75
+- scale_floor disabled by default.
+- Optional binary reserve patch remains signature-guarded and fails safely.
+- Tested through multiple Python reloads, real-weather activation and a
+  complete flight through landing.
