@@ -1,3 +1,8 @@
+<p align="center">
+  <img src="images/logo.png" alt="Projekt Logo" width="200">
+</p>
+
+
 X-VRAM Manager v0.3
 ====================
 
