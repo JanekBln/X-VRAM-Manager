@@ -3,7 +3,7 @@
 </p>
 
 
-X-VRAM Manager v0.3
+X-VRAM Manager v0.31
 ====================
 
 Standalone XPPython3 texture-pager tuning plugin for X-Plane 12.
