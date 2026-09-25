@@ -12,13 +12,13 @@ import ctypes
 import configparser
 import traceback
 
-import xp
+from XPPython3 import xp
 
 
 PLUGIN_NAME = "X-VRAM Manager"
 PLUGIN_SIG = "xvram.manager"
 PLUGIN_DESC = "Standalone X-Plane 12 texture-pager tuning"
-PLUGIN_VERSION = "0.3.0"
+PLUGIN_VERSION = "0.3.1"
 
 
 class XVRAMManager:
@@ -665,34 +665,39 @@ class XVRAMManager:
             return "unknown"
 
 
-_manager = None
 
+class PythonInterface:
+    """XPPython3 plugin entry point."""
 
-def XPluginStart():
-    global _manager
-    _manager = XVRAMManager()
-    _manager.start()
-    return PLUGIN_NAME, PLUGIN_SIG, PLUGIN_DESC
+    def __init__(self):
+        self.manager = None
+        self._initial_enable_pending = True
 
+    def XPluginStart(self):
+        self.manager = XVRAMManager()
+        self.manager.start()
+        return PLUGIN_NAME, PLUGIN_SIG, PLUGIN_DESC
 
-def XPluginStop():
-    global _manager
-    if _manager:
-        _manager.stop()
-    _manager = None
+    def XPluginStop(self):
+        if self.manager:
+            self.manager.stop()
+        self.manager = None
 
+    def XPluginEnable(self):
+        # manager.start() already applies the configuration during initial load.
+        # Avoid applying it twice on XPPython3's immediate first Enable call.
+        if self._initial_enable_pending:
+            self._initial_enable_pending = False
+            return 1
 
-def XPluginEnable():
-    if _manager:
-        return _manager.enable()
-    return 1
+        if self.manager:
+            return self.manager.enable()
+        return 1
 
+    def XPluginDisable(self):
+        if self.manager:
+            self.manager.disable()
 
-def XPluginDisable():
-    if _manager:
-        _manager.disable()
-
-
-def XPluginReceiveMessage(fromWho, message, param):
-    if _manager:
-        _manager.receive_message(fromWho, message, param)
+    def XPluginReceiveMessage(self, inFromWho, inMessage, inParam):
+        if self.manager:
+            self.manager.receive_message(inFromWho, inMessage, inParam)
