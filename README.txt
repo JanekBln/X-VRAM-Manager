@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="images/logo.png" alt="Projekt Logo" width="200">
+  <img src="https://github.com/JanekBln/X-VRAM-Manager/blob/main/images/logo.png" alt="Projekt Logo" width="200">
 </p>
 
 
