@@ -1,7 +1,31 @@
 X-VRAM Manager - Changelog
 ===========================
+
+v0.4.1
+------
+- Replaced the O/0-style active indicator with a real colored LED glyph.
+- Green LED = X-VRAM pager tuning active; red LED = inactive/off.
+- Removed window resizing; monitor is now fixed-size but remains movable.
+- Added APPLY, RELOAD and RESTORE buttons directly to the monitor.
+- Added the same Apply / Reload Config / Restore Stock actions to the Plugins menu.
+- Core VRAM/pager tuning logic remains unchanged.
+
+v0.4.0
+------
+- Added an optional semi-transparent in-sim VRAM monitor.
+- Monitor opens from Plugins -> X-VRAM Manager -> VRAM Monitor.
+- Movable title strip, resizable edges and small X close control.
+- Displays process VRAM usage, DXGI budget, headroom and dedicated GPU VRAM.
+- Green lamp indicates active X-VRAM pager tuning.
+- Monitor stays hidden by default and polls telemetry only while visible.
+- Tested pager-control logic from v0.3/v0.3.1 remains unchanged.
+
 v0.3.1
--XPPython3 entry point is changed
+------
+- Fixed XPPython3 4.7.1 compatibility.
+- Added the required PythonInterface class for PI_*.py plugins.
+- Switched to the documented import: from XPPython3 import xp.
+- VRAM / texture-pager tuning logic unchanged from v0.3.
 
 v0.3
 ----
