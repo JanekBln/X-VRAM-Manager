@@ -1,4 +1,4 @@
-# X-VRAM Manager v0.3
+# X-VRAM Manager v0.4.1
 # Standalone XPPython3 texture-pager tuning for X-Plane 12.
 # GPL-3.0-or-later.
 #
@@ -11,14 +11,66 @@ import struct
 import ctypes
 import configparser
 import traceback
+import uuid
 
 from XPPython3 import xp
 
 
 PLUGIN_NAME = "X-VRAM Manager"
 PLUGIN_SIG = "xvram.manager"
-PLUGIN_DESC = "Standalone X-Plane 12 texture-pager tuning"
-PLUGIN_VERSION = "0.3.1"
+PLUGIN_DESC = "Standalone X-Plane 12 texture-pager tuning with VRAM monitor"
+PLUGIN_VERSION = "0.4.1"
+
+
+class _GUID(ctypes.Structure):
+    _fields_ = [
+        ("Data1", ctypes.c_uint32),
+        ("Data2", ctypes.c_uint16),
+        ("Data3", ctypes.c_uint16),
+        ("Data4", ctypes.c_ubyte * 8),
+    ]
+
+
+class _LUID(ctypes.Structure):
+    _fields_ = [
+        ("LowPart", ctypes.c_uint32),
+        ("HighPart", ctypes.c_int32),
+    ]
+
+
+class _DXGI_ADAPTER_DESC1(ctypes.Structure):
+    _fields_ = [
+        ("Description", ctypes.c_wchar * 128),
+        ("VendorId", ctypes.c_uint32),
+        ("DeviceId", ctypes.c_uint32),
+        ("SubSysId", ctypes.c_uint32),
+        ("Revision", ctypes.c_uint32),
+        ("DedicatedVideoMemory", ctypes.c_size_t),
+        ("DedicatedSystemMemory", ctypes.c_size_t),
+        ("SharedSystemMemory", ctypes.c_size_t),
+        ("AdapterLuid", _LUID),
+        ("Flags", ctypes.c_uint32),
+    ]
+
+
+class _DXGI_QUERY_VIDEO_MEMORY_INFO(ctypes.Structure):
+    _fields_ = [
+        ("Budget", ctypes.c_uint64),
+        ("CurrentUsage", ctypes.c_uint64),
+        ("AvailableForReservation", ctypes.c_uint64),
+        ("CurrentReservation", ctypes.c_uint64),
+    ]
+
+
+def _guid(text):
+    return _GUID.from_buffer_copy(uuid.UUID(text).bytes_le)
+
+
+def _com_method(ptr, index, restype, *argtypes):
+    """Return a callable COM vtable method for a c_void_p interface pointer."""
+    table = ctypes.cast(ptr, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+    address = ctypes.cast(table[index], ctypes.c_void_p).value
+    return ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)(address)
 
 
 class XVRAMManager:
@@ -46,6 +98,21 @@ class XVRAMManager:
         self._base = 0
         self._kernel32 = None
         self._process = None
+
+        # Lightweight monitor UI. Hidden by default and opened from the
+        # X-Plane Plugins menu. The tuning code itself is unchanged.
+        self._window = None
+        self._menu = None
+        self._dragging = False
+        self._drag_mouse = (0, 0)
+        self._drag_geometry = None
+
+        # DXGI local-video-memory telemetry for the current X-Plane process.
+        self._dxgi_adapter3 = None
+        self._dxgi_adapter_name = ""
+        self._dxgi_total_bytes = 0
+        self._vram_snapshot = None
+        self._vram_query_failed_logged = False
 
         self.load_config()
 
@@ -187,7 +254,7 @@ class XVRAMManager:
         if os.name != "nt":
             self.log("binary patching is Windows-only - skipped")
             return False
-        if self._kernel32 and self._base:
+        if self._kernel32 && self._base:
             return True
 
         try:
@@ -500,6 +567,390 @@ class XVRAMManager:
         )
         return True
 
+
+    # -------------------------------------------------------------- VRAM monitor
+
+    def _release_com(self, ptr):
+        if not ptr:
+            return
+        try:
+            release = _com_method(ptr, 2, ctypes.c_ulong)
+            release(ptr)
+        except Exception:
+            pass
+
+    def _release_dxgi(self):
+        if self._dxgi_adapter3:
+            self._release_com(self._dxgi_adapter3)
+        self._dxgi_adapter3 = None
+        self._dxgi_adapter_name = ""
+        self._dxgi_total_bytes = 0
+        self._vram_snapshot = None
+
+    def _init_dxgi(self):
+        """Resolve the discrete GPU and keep an IDXGIAdapter3 interface."""
+        if self._dxgi_adapter3:
+            return True
+        if os.name != "nt":
+            return False
+
+        factory = ctypes.c_void_p()
+        try:
+            dxgi = ctypes.WinDLL("dxgi.dll")
+            create_factory = dxgi.CreateDXGIFactory1
+            create_factory.argtypes = [ctypes.POINTER(_GUID), ctypes.POINTER(ctypes.c_void_p)]
+            create_factory.restype = ctypes.c_long
+
+            iid_factory1 = _guid("770aae78-f26f-4dba-a829-253c83d1b387")
+            iid_adapter3 = _guid("645967a4-1392-4310-a798-8053ce3e93fd")
+
+            hr = int(create_factory(ctypes.byref(iid_factory1), ctypes.byref(factory)))
+            if hr < 0 or not factory:
+                return False
+
+            # IDXGIFactory1::EnumAdapters1 is vtable slot 12.
+            enum_adapters1 = _com_method(
+                factory, 12, ctypes.c_long, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)
+            )
+
+            best = None
+            best_total = -1
+            index = 0
+            while index < 32:
+                adapter1 = ctypes.c_void_p()
+                hr = int(enum_adapters1(factory, index, ctypes.byref(adapter1)))
+                if hr < 0 or not adapter1:
+                    break
+
+                try:
+                    # IDXGIAdapter1::GetDesc1 is vtable slot 10.
+                    get_desc1 = _com_method(
+                        adapter1, 10, ctypes.c_long, ctypes.POINTER(_DXGI_ADAPTER_DESC1)
+                    )
+                    desc = _DXGI_ADAPTER_DESC1()
+                    if int(get_desc1(adapter1, ctypes.byref(desc))) >= 0:
+                        # DXGI_ADAPTER_FLAG_SOFTWARE == 2. Prefer the physical
+                        # adapter with the largest dedicated VRAM (RTX 3090 on
+                        # the tested machine rather than the integrated GPU).
+                        if not (int(desc.Flags) & 2):
+                            adapter3 = ctypes.c_void_p()
+                            query_interface = _com_method(
+                                adapter1,
+                                0,
+                                ctypes.c_long,
+                                ctypes.POINTER(_GUID),
+                                ctypes.POINTER(ctypes.c_void_p),
+                            )
+                            qhr = int(
+                                query_interface(
+                                    adapter1, ctypes.byref(iid_adapter3), ctypes.byref(adapter3)
+                                )
+                            )
+                            if qhr >= 0 and adapter3:
+                                dedicated = int(desc.DedicatedVideoMemory)
+                                if dedicated > best_total:
+                                    if best:
+                                        self._release_com(best[0])
+                                    best = (adapter3, str(desc.Description).strip(), dedicated)
+                                    best_total = dedicated
+                                else:
+                                    self._release_com(adapter3)
+                finally:
+                    self._release_com(adapter1)
+                index += 1
+
+            if not best:
+                return False
+
+            self._dxgi_adapter3 = best[0]
+            self._dxgi_adapter_name = best[1]
+            self._dxgi_total_bytes = best[2]
+            self.log(
+                "VRAM monitor: DXGI adapter={} dedicated={:.2f}GB".format(
+                    self._dxgi_adapter_name or "unknown",
+                    self._dxgi_total_bytes / (1024.0 ** 3),
+                )
+            )
+            return True
+        except Exception as exc:
+            if not self._vram_query_failed_logged:
+                self._vram_query_failed_logged = True
+                self.log(f"VRAM monitor: DXGI init unavailable: {exc}")
+            self._release_dxgi()
+            return False
+        finally:
+            if factory:
+                self._release_com(factory)
+
+    def _update_vram_snapshot(self):
+        if not self._init_dxgi():
+            return False
+        try:
+            info = _DXGI_QUERY_VIDEO_MEMORY_INFO()
+            # IDXGIAdapter3::QueryVideoMemoryInfo is vtable slot 14.
+            query = _com_method(
+                self._dxgi_adapter3,
+                14,
+                ctypes.c_long,
+                ctypes.c_uint32,
+                ctypes.c_int,
+                ctypes.POINTER(_DXGI_QUERY_VIDEO_MEMORY_INFO),
+            )
+            # Node 0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL (dedicated/local VRAM).
+            hr = int(query(self._dxgi_adapter3, 0, 0, ctypes.byref(info)))
+            if hr < 0:
+                raise OSError(f"QueryVideoMemoryInfo HRESULT=0x{hr & 0xffffffff:08X}")
+
+            used = int(info.CurrentUsage)
+            budget = int(info.Budget)
+            self._vram_snapshot = {
+                "used": used,
+                "budget": budget,
+                "headroom": max(0, budget - used),
+                "total": int(self._dxgi_total_bytes),
+            }
+            self._vram_query_failed_logged = False
+            return True
+        except Exception as exc:
+            if not self._vram_query_failed_logged:
+                self._vram_query_failed_logged = True
+                self.log(f"VRAM monitor: query failed: {exc}")
+            return False
+
+    @staticmethod
+    def _fmt_gb(value):
+        if value is None:
+            return "---"
+        return f"{float(value) / (1024.0 ** 3):.2f} GB"
+
+    def _tool_is_active(self):
+        if not self.enabled:
+            return False
+        if self.cfg.get("fallback_controls", True):
+            return bool(self._fallback_ready_logged)
+        return bool(self._patches) or self.enabled
+
+    def _create_monitor_ui(self):
+        try:
+            self._menu = xp.createMenu(
+                name="X-VRAM Manager", parentMenuID=None, parentItem=0,
+                handler=self._menu_handler, refCon=None
+            )
+            if self._menu:
+                xp.appendMenuItem(self._menu, "VRAM Monitor", refCon="toggle_monitor")
+                xp.appendMenuSeparator(self._menu)
+                xp.appendMenuItem(self._menu, "Apply", refCon="apply")
+                xp.appendMenuItem(self._menu, "Reload Config", refCon="reload")
+                xp.appendMenuItem(self._menu, "Restore Stock", refCon="restore")
+        except Exception as exc:
+            self.log(f"VRAM monitor: menu creation failed: {exc}")
+            self._menu = None
+
+        try:
+            try:
+                screen_w, screen_h = xp.getScreenSize()
+            except Exception:
+                screen_w, screen_h = (1920, 1080)
+
+            # Fixed-size panel: movable, intentionally not resizable.
+            width, height = 360, 220
+            left = 40
+            top = int(screen_h) - 80
+
+            decoration = getattr(
+                xp,
+                "WindowDecorationSelfDecorated",
+                getattr(xp, "WindowDecorationNone", 0),
+            )
+            self._window = xp.createWindowEx(
+                left=left,
+                top=top,
+                right=left + width,
+                bottom=top - height,
+                visible=0,
+                draw=self._draw_monitor,
+                click=self._monitor_click,
+                key=self._monitor_key,
+                cursor=self._monitor_cursor,
+                wheel=self._monitor_wheel,
+                refCon=None,
+                decoration=decoration,
+                layer=xp.WindowLayerFloatingWindows,
+                rightClick=self._monitor_right_click,
+            )
+            if self._window:
+                try:
+                    xp.setWindowPositioningMode(self._window, xp.WindowPositionFree, -1)
+                except Exception:
+                    pass
+        except Exception as exc:
+            self.log(f"VRAM monitor: window creation failed: {exc}")
+            self._window = None
+
+    def _destroy_monitor_ui(self):
+        if self._window:
+            try:
+                xp.destroyWindow(self._window)
+            except Exception:
+                pass
+            self._window = None
+
+        if self._menu:
+            try:
+                xp.destroyMenu(self._menu)
+            except Exception:
+                pass
+            self._menu = None
+
+        self._dragging = False
+        self._drag_geometry = None
+
+    def _menu_handler(self, menuRefCon, itemRefCon):
+        if itemRefCon == "toggle_monitor":
+            self.toggle_monitor()
+        elif itemRefCon == "apply":
+            self._ui_apply()
+        elif itemRefCon == "reload":
+            self._ui_reload()
+        elif itemRefCon == "restore":
+            self._ui_restore()
+
+    def _ui_apply(self):
+        self.log("ui: apply")
+        self.apply_all()
+
+    def _ui_reload(self):
+        self.log("ui: reload_config")
+        self.restore_all()
+        self.apply_all()
+
+    def _ui_restore(self):
+        self.log("ui: restore_stock")
+        self.restore_all()
+
+    def toggle_monitor(self):
+        if not self._window:
+            return
+        try:
+            visible = bool(xp.getWindowIsVisible(self._window))
+            if not visible:
+                self._update_vram_snapshot()
+                xp.setWindowIsVisible(self._window, 1)
+                try:
+                    xp.bringWindowToFront(self._window)
+                except Exception:
+                    pass
+            else:
+                xp.setWindowIsVisible(self._window, 0)
+        except Exception as exc:
+            self.log(f"VRAM monitor: toggle failed: {exc}")
+
+    def _draw_monitor(self, windowID, refCon):
+        left, top, right, bottom = xp.getWindowGeometry(windowID)
+
+        xp.drawTranslucentDarkBox(left, top, right, bottom)
+
+        white = (1.0, 1.0, 1.0)
+        green = (0.15, 1.0, 0.15)
+        red = (1.0, 0.18, 0.18)
+        dim = (0.72, 0.72, 0.72)
+        font = xp.Font_Basic
+
+        pad = 12
+        header_y = top - 22
+        xp.drawString(white, left + pad, header_y, f"X-VRAM  v{PLUGIN_VERSION}", None, font)
+        xp.drawString(white, right - 20, header_y, "X", None, font)
+
+        active = self._tool_is_active()
+        lamp_color = green if active else red
+        status_text = "ACTIVE" if active else "OFF"
+        # Solid dot glyph used as the LED instead of the previous O/0.
+        xp.drawString(lamp_color, left + pad, top - 45, "●", None, font)
+        xp.drawString(white, left + pad + 18, top - 45, status_text, None, font)
+
+        snap = self._vram_snapshot or {}
+        rows = [
+            ("VRAM USED", self._fmt_gb(snap.get("used"))),
+            ("VRAM BUDGET", self._fmt_gb(snap.get("budget"))),
+            ("HEADROOM", self._fmt_gb(snap.get("headroom"))),
+            ("GPU VRAM", self._fmt_gb(snap.get("total"))),
+        ]
+
+        y = top - 69
+        value_x = left + 170
+        for label, value in rows:
+            xp.drawString(white, left + pad, y, label, None, font)
+            xp.drawString(white, value_x, y, value, None, font)
+            y -= 20
+
+        pager = self.cfg.get("max_overdrive", 64.0)
+        fudge = self.cfg.get("size_fudge_factor", 0.75)
+        xp.drawString(dim, left + pad, bottom + 55, f"PAGER {pager:g}   FUDGE {fudge:g}", None, font)
+
+        # Bottom action row. Black/white styling, matching the monitor.
+        xp.drawString(white, left + 18, bottom + 27, "[ APPLY ]", None, font)
+        xp.drawString(white, left + 118, bottom + 27, "[ RELOAD ]", None, font)
+        xp.drawString(white, left + 232, bottom + 27, "[ RESTORE ]", None, font)
+
+    def _monitor_click(self, windowID, x, y, mouseStatus, refCon):
+        try:
+            left, top, right, bottom = xp.getWindowGeometry(windowID)
+
+            if mouseStatus == xp.MouseDown:
+                # Small custom close box in the upper-right corner.
+                if (right - 34) <= x <= right and (top - 30) <= y <= top:
+                    xp.setWindowIsVisible(windowID, 0)
+                    self._dragging = False
+                    return 1
+
+                # Action buttons.
+                if (bottom + 12) <= y <= (bottom + 43):
+                    if (left + 8) <= x <= (left + 102):
+                        self._ui_apply()
+                        return 1
+                    if (left + 105) <= x <= (left + 224):
+                        self._ui_reload()
+                        return 1
+                    if (left + 226) <= x <= (right - 8):
+                        self._ui_restore()
+                        return 1
+
+                # Drag anywhere in the title strip except the close box.
+                if (top - 30) <= y <= top and x < (right - 34):
+                    self._dragging = True
+                    self._drag_mouse = (x, y)
+                    self._drag_geometry = (left, top, right, bottom)
+                    return 1
+
+            elif mouseStatus == xp.MouseDrag and self._dragging and self._drag_geometry:
+                sx, sy = self._drag_mouse
+                gl, gt, gr, gb = self._drag_geometry
+                dx = x - sx
+                dy = y - sy
+                xp.setWindowGeometry(windowID, gl + dx, gt + dy, gr + dx, gb + dy)
+                return 1
+
+            elif mouseStatus == xp.MouseUp:
+                self._dragging = False
+                self._drag_geometry = None
+                return 1
+        except Exception:
+            self._dragging = False
+            self._drag_geometry = None
+        return 1
+
+    def _monitor_key(self, windowID, key, flags, vKey, refCon, losingFocus):
+        return None
+
+    def _monitor_cursor(self, windowID, x, y, refCon):
+        return xp.CursorDefault
+
+    def _monitor_wheel(self, windowID, x, y, wheel, clicks, refCon):
+        return 1
+
+    def _monitor_right_click(self, windowID, x, y, mouseStatus, refCon):
+        return 1
+
     # ------------------------------------------------------------ application logic
 
     def apply_all(self):
@@ -536,6 +987,13 @@ class XVRAMManager:
     def flight_loop(self, sinceLast, elapsedTime, counter, refcon):
         self._cycle += 1
         self._frames_in_flight += 1
+
+        if self._window and self._cycle % 30 == 0:
+            try:
+                if xp.getWindowIsVisible(self._window):
+                    self._update_vram_snapshot()
+            except Exception:
+                pass
 
         if self.enabled and self.cfg.get("fallback_controls", True):
             # Retry more often during the first 600 callbacks, then use the
@@ -621,6 +1079,7 @@ class XVRAMManager:
         except Exception as exc:
             self.log(f"flight loop registration failed: {exc}")
 
+        self._create_monitor_ui()
         self.apply_all()
 
     def stop(self):
@@ -635,6 +1094,9 @@ class XVRAMManager:
             except Exception:
                 pass
             self._flightloop_registered = False
+
+        self._destroy_monitor_ui()
+        self._release_dxgi()
 
         for cmd, handler in [
             (self._cmd_apply, self.command_apply),
@@ -665,7 +1127,6 @@ class XVRAMManager:
             return "unknown"
 
 
-
 class PythonInterface:
     """XPPython3 plugin entry point."""
 
@@ -684,7 +1145,7 @@ class PythonInterface:
         self.manager = None
 
     def XPluginEnable(self):
-        # manager.start() already applies the configuration during initial load.
+        # start() already applies the configuration during initial load.
         # Avoid applying it twice on XPPython3's immediate first Enable call.
         if self._initial_enable_pending:
             self._initial_enable_pending = False
@@ -701,3 +1162,4 @@ class PythonInterface:
     def XPluginReceiveMessage(self, inFromWho, inMessage, inParam):
         if self.manager:
             self.manager.receive_message(inFromWho, inMessage, inParam)
+
