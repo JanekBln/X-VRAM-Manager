@@ -254,7 +254,7 @@ class XVRAMManager:
         if os.name != "nt":
             self.log("binary patching is Windows-only - skipped")
             return False
-        if self._kernel32 && self._base:
+        if self._kernel32 and self._base:
             return True
 
         try:
