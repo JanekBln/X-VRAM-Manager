@@ -3,7 +3,7 @@
 </p>
 
 
-X-VRAM Manager v0.31
+X-VRAM Manager v0.4.1
 ====================
 
 Standalone XPPython3 texture-pager tuning plugin for X-Plane 12.
@@ -74,10 +74,60 @@ Open X-Plane's Log.txt and search for:
 
 A normal successful activation should contain lines similar to:
 
-    [X-VRAM] v0.3.0 starting
+    [X-VRAM] v0.4.1 starting
     [X-VRAM] control: sim/private/controls/tex/paging/max_overdrive original=16
     [X-VRAM] control: sim/private/controls/tex/paging/size_fudge_factor original=1.05
     [X-VRAM] pager fallback controls: ACTIVE (late-resolved)
+
+VRAM MONITOR
+------------
+Version 0.4.1 includes an optional in-sim VRAM monitor. It is hidden by default.
+
+Open it from:
+
+    X-Plane menu -> Plugins -> X-VRAM Manager -> VRAM Monitor
+
+The monitor is:
+
+- semi-transparent with black/white styling
+- movable by dragging its top strip
+- fixed size (resize removed for reliability)
+- closable with the small X in the upper-right corner
+- intentionally lightweight; VRAM telemetry is polled only while visible
+
+Displayed values:
+
+    VRAM USED
+        Current local video-memory usage of the X-Plane process.
+
+    VRAM BUDGET
+        Current Windows/DXGI local video-memory budget for the process.
+
+    HEADROOM
+        Budget minus current usage.
+
+    GPU VRAM
+        Dedicated VRAM reported by the selected physical adapter.
+
+The status LED is green while X-VRAM pager tuning is active and red while it
+is inactive/off.
+
+The monitor also contains three clickable buttons:
+
+    APPLY
+        Apply the current configuration.
+
+    RELOAD
+        Reload XVRAM_Manager.ini and apply it.
+
+    RESTORE
+        Restore the captured stock X-Plane pager values.
+
+The same actions remain available from the X-VRAM Manager Plugins menu.
+
+The monitor uses Windows DXGI telemetry. Its values are process-level GPU
+memory information and are not intended to be identical to X-Plane's internal
+"Texture usage" log line.
 
 DEFAULT SETTINGS
 ----------------
@@ -96,7 +146,7 @@ X-Plane already contains its own texture pager. The pager decides which
 textures remain resident in GPU memory and when texture resolution must be
 reduced to remain inside the available GPU-memory budget.
 
-X-VRAM Manager v0.3 works in three main steps:
+X-VRAM Manager v0.4.1 keeps the tested v0.3 pager logic and adds a lightweight monitor.\n\nThe pager tuning still works in three main steps:
 
 1. Late control discovery
 
@@ -209,7 +259,7 @@ If the log contains:
 
     pager fallback controls: ACTIVE (late-resolved)
 
-the main v0.3 pager tuning is active.
+the main pager tuning is active.
 
 If the binary reserve patch reports zero signature hits, this does NOT mean
 the main plugin failed. It only means that the optional version-sensitive
@@ -227,7 +277,7 @@ COMPATIBILITY NOTES
 
 TEST OBSERVATION
 ----------------
-During the development test flight, v0.3 survived multiple XPPython3 reloads,
+During the development test flight, the v0.3 pager core survived multiple XPPython3 reloads,
 real-weather activation, ReShade usage and a complete flight through landing
 without the earlier severe VRAM/pager instability seen during previous tests.
 
