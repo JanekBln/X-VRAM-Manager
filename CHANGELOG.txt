@@ -1,3 +1,19 @@
+v0.4.3
+------
+- Added a 32 / 64 texture-level switch to the in-sim VRAM Monitor.
+- 32 = Balanced mode with more VRAM headroom.
+- 64 = Aggressive mode for maximum texture quality.
+- Added a mouse-over tooltip explaining both levels.
+- Selected level is saved to XVRAM_Manager.ini.
+- PAGER and FUDGE continue to show live X-Plane values.
+- RESTORE continues to hold stock values until APPLY or RELOAD.
+
+v0.4.2
+------
+- Monitor PAGER/FUDGE now show live X-Plane art-control values instead of INI targets.
+- RESTORE now disables runtime reassertion and holds captured stock values.
+- APPLY/RELOAD re-enable X-VRAM and apply pager controls immediately when available.
+
 X-VRAM Manager - Changelog
 ===========================
 

@@ -3,7 +3,7 @@
 </p>
 
 
-X-VRAM Manager v0.4.1
+X-VRAM Manager v0.4.3
 ====================
 
 Standalone XPPython3 texture-pager tuning plugin for X-Plane 12.
@@ -23,7 +23,7 @@ TESTED CONFIGURATION
 --------------------
 Development testing was performed with:
 
-- X-Plane 12.4.4-b1 build 124410
+- X-Plane 12.4.4-b3 build 124413
 - XPPython3 4.7.1
 - NVIDIA RTX 3090 24 GB
 - ReShade enabled
@@ -74,14 +74,14 @@ Open X-Plane's Log.txt and search for:
 
 A normal successful activation should contain lines similar to:
 
-    [X-VRAM] v0.4.1 starting
+    [X-VRAM] v0.4.3 starting
     [X-VRAM] control: sim/private/controls/tex/paging/max_overdrive original=16
     [X-VRAM] control: sim/private/controls/tex/paging/size_fudge_factor original=1.05
     [X-VRAM] pager fallback controls: ACTIVE (late-resolved)
 
 VRAM MONITOR
 ------------
-Version 0.4.1 includes an optional in-sim VRAM monitor. It is hidden by default.
+Version 0.4.3 includes an optional in-sim VRAM monitor. It is hidden by default.
 
 Open it from:
 
@@ -146,7 +146,7 @@ X-Plane already contains its own texture pager. The pager decides which
 textures remain resident in GPU memory and when texture resolution must be
 reduced to remain inside the available GPU-memory budget.
 
-X-VRAM Manager v0.4.1 keeps the tested v0.3 pager logic and adds a lightweight monitor.\n\nThe pager tuning still works in three main steps:
+X-VRAM Manager v0.4.3 keeps the tested v0.3 pager logic and adds a lightweight monitor.\n\nThe pager tuning still works in three main steps:
 
 1. Late control discovery
 
@@ -302,3 +302,24 @@ Use at your own risk.
 This plugin changes undocumented/private X-Plane controls and contains
 optional version-sensitive in-memory patch logic. Always re-test it after an
 X-Plane update.
+
+TEXTURE LEVEL SWITCH
+--------------------
+The VRAM Monitor includes a 32 / 64 LEVEL switch:
+
+32
+    Balanced mode. Keeps more VRAM headroom and is intended to reduce
+    aggressive texture-pager pressure and large pager swings.
+
+64
+    Aggressive mode. Allows maximum texture quality but can use more of
+    X-Plane's available texture budget.
+
+Hover the LEVEL switch for a short in-sim explanation.
+
+The selected level is saved to XVRAM_Manager.ini and is retained after restart.
+FUDGE remains unchanged at 0.75 when switching between 32 and 64.
+
+RESTORE still returns X-Plane to the captured stock pager values and disables
+X-VRAM runtime reassertion until APPLY or RELOAD is used again.
+
